@@ -12,6 +12,8 @@ rather than relying on high level frameworks.
 * TCP Listener Socket configured and functional
 * Static File Serving: Serves HTML, CSS, Javascript and other static content from a configurable web root directory.
 * HTTP/1.1 Compliance (Partial): implements core aspects of the HTTP/1.1 protocol.
+* Some HTTP Parsing added
+* Flask API Partly implemented
 
 ##Inprogress Features
     * HTTP Parsing
