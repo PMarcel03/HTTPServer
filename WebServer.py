@@ -3,9 +3,14 @@ import socket
 import os
 import io
 import sys
+import urllib.parse 
+import errno
+import signal
+
 
 #Import Flask App
 from app import app as flask_app
+
 
 class http_server_program:
     """
@@ -36,59 +41,165 @@ class http_server_program:
     def set_app(self,application):
         self.application= application
 
+    def grim_reaper(self, signum, frame):
+        """
+        Signal handler to clean up zombie child processes
+        uses waitpid with WNOHANG to handle multiple simultaneous child exits
+        """
+        while True:
+            try:
+                pid , status = os.waitpid(
+                    -1, #Wait for any child process
+                    os.WNOHANG #Don't block, return immediately if no zombies
+                )
+            except OSError:
+                #No more child processes to wait for
+                return
+            if pid == 0: #No more zombies to clean up
+                return
+
    #TCP Socket Listener
     def serve_forever(self):
         """
-        Starts the main server loop, listening for and handling client connections
+        Concurrent server loop that forks child processes to handle requests
         """
 
-        self.socket.listen(2)
+        self.socket.listen(1024)
         print(f'Serving HTTP on {self.host}:{self.port} ...')
+        print(f'Parent PID: {os.getpid()}')
         print (f'Web Root Directory: {os.path.abspath(self.web_root)}')
 
+        #Set up signal handler for cleaning up zombie processes
+        signal.signal(signal.SIGCHLD, self.grim_reaper)
+
         while True:
-            #Wait for client connections
-            self.client_connection, client_address = self.socket.accept()
-            print (f"Accepted Connection From: {client_address}")
+            try:
+                #Wait for client connections
+                client_connection, client_address = self.socket.accept()
+                print (f"Accepted Connection From: {client_address}")
+            
+            except IOError as e:
+                code, msg = e.args
+                #Restart accept() if it was interrupted by a signal
+                if code == errno.EINTR:
+                    continue
+                else:
+                    raise
 
-            #Handle the client's request
-            self.handle_request(self.client_connection)
+            #Fork a child process to handle this client
+            pid = os.fork()
+
+            if pid == 0: #Child process
+                #Child doesn't need listening socket
+                self.socket.close()
+
+                #Handle the client's request
+                self.handle_request(client_connection)
+
+                #Close client connection and exit
+                client_connection.close()
+                os._exit(0) #Child exits here
+
+            else: #Parent Process
+                #Parent doesn't need client connection
+                #Child process will handle it
+                client_connection.close()
+                #Loop back to accept() for next client
+
+            
 
 
 
-    #HTTP Handler
     def handle_request(self, connection):
         """
-        Receives, Parses and responses to a single client's HTTP request
+        Receives, Parses and responds to a single client's HTTP request
+        This runs in a child process for each request
         """
-        #Get the client request
-        request_data = connection.recv(1024).decode('utf-8')
-        self.request_data = request_data
-        print ("---Request Start---")
-        print (request_data.strip())
-        print ("---Request End---")
+        try:
+            # Store connection as instance variable (like your original code)
+            self.client_connection = connection
+            
+            # Get the client request - read more data if needed
+            request_data = connection.recv(4096).decode('utf-8')
+            self.request_data = request_data
+            
+            print(f"Child PID {os.getpid()} handling request:")
+            print("---Request Start---")
+            print(request_data.strip()[:200] + "..." if len(request_data.strip()) > 200 else request_data.strip())
+            print("---Request End---")
 
-        self.parse_request(request_data)
-        
-        #Construct envrioment dictionary using request data
-        env = self.get_environ()
+            if not request_data.strip():
+                print("Empty request received")
+                return
 
-        #Call Application
-        result = self.application(env, self.start_response)
+            self.parse_request(request_data)
+            
+            # Construct environment dictionary using request data
+            env = self.get_environ()
 
-        #Construct Response
-        self.finish_response(result)
+            # Call Application (Flask)
+            result = self.application(env, self.start_response)
+
+            # Construct Response - using original method signature
+            self.finish_response(result)
+            
+        except ValueError as e:
+            print(f"Parsing error in child process {os.getpid()}: {e}")
+            self.send_error_response(connection, "400 Bad Request", str(e))
+        except Exception as e:
+            print(f"Error in child process {os.getpid()}: {e}")
+            self.send_error_response(connection, "500 Internal Server Error", "Internal Server Error")
+
+    def send_error_response(self, connection, status, message):
+        """Send a simple error response"""
+        try:
+            error_response = f"HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {len(message)}\r\n\r\n{message}"
+            connection.sendall(error_response.encode('utf-8'))
+        except Exception as e:
+            print(f"Failed to send error response: {e}")
 
     def parse_request(self, text):
-        #Parse HTTP headers to get the requested filename
-        request_line = text.splitlines()[0]
-        request_line = request_line.rstrip('\r\n')
+        """Enhanced HTTP parsing with headers and query string support"""
+        if not text or not text.strip():
+            raise ValueError("Empty request")
             
-        #Break down the request line into components
-        (self.request_method, #GET
-        self.path, #Hello
-        self.request_version #HTTP 1.1
-        ) = request_line.split()
+        lines = text.splitlines()
+        if not lines:
+            raise ValueError("No request line found")
+        
+        # Parse request line (first line)
+        request_line = lines[0].rstrip('\r\n')
+        parts = request_line.split()
+        
+        if len(parts) < 2:
+            raise ValueError(f"Invalid request line: {request_line}")
+        elif len(parts) == 2:
+            # Handle case where HTTP version might be missing
+            self.request_method, full_path = parts
+            self.request_version = 'HTTP/1.0'  # Default version
+        else:
+            # Normal case with method, path, and version
+            self.request_method, full_path, self.request_version = parts[0], parts[1], parts[2]
+        
+        # Parse path and query string
+        if '?' in full_path:
+            self.path, self.query_string = full_path.split('?', 1)
+        else:
+            self.path = full_path
+            self.query_string = ''
+        
+        # Parse HTTP headers
+        self.headers = {}
+        for line in lines[1:]:
+            line = line.strip()
+            if line and ':' in line:
+                name, value = line.split(':', 1)
+                self.headers[name.strip().lower()] = value.strip()
+            elif not line:  # Empty line indicates end of headers
+                break
+        
+        # Get content length for POST requests
+        self.content_length = int(self.headers.get('content-length', '0'))
             
     def get_environ(self):
         env = {}
@@ -102,9 +213,23 @@ class http_server_program:
         env['wsgi.run_once'] = False
         #Required CGI Variables
         env['REQUEST_METHOD'] = self.request_method #GET
-        env['PATH_INFO'] = self.path #/hello
+        env['PATH_INFO'] = urllib.parse.unquote(self.path) #/hello (URL Decoded)
+        env['QUERY_STRING'] = self.query_string #Add query string
         env['SERVER_NAME'] = self.server_name #LocalHost
         env['SERVER_PORT'] = str(self.server_port) #8888
+        
+        #Add content-related variables
+        if self.content_length > 0:
+            env['CONTENT_LENGTH'] = str(self.content_length)
+        if 'content-type' in self.headers:
+            env['CONTENT_TYPE'] = self.headers['content-type']
+
+        #Add HTTP headers to enviroment
+        for name, value in self.headers.items():
+            cgi_name = 'HTTP_' + name.upper().replace('-','_')
+            env[cgi_name] = value
+
+
         return env
     
     def start_response(self,status,response_headers, exc_info=None):
@@ -119,17 +244,26 @@ class http_server_program:
 
 
     def finish_response(self, result):
+        """Send the complete HTTP response"""
         try:
             status, response_headers = self.headers_set
             response = f'HTTP/1.1 {status}\r\n'
+            
             for header in response_headers:
                 response += '{0}: {1}\r\n'.format(*header)
             response += '\r\n'
+            
+            # Send headers
+            self.client_connection.sendall(response.encode('utf-8'))
+            
+            # Send response body
             for data in result:
-                response_bytes = data
-                self.client_connection.sendall(response_bytes)
-        finally:
-            self.client_connection.close()
+                if isinstance(data, str):
+                    data = data.encode('utf-8')
+                self.client_connection.sendall(data)
+                
+        except Exception as e:
+            print(f"Error sending response in PID {os.getpid()}: {e}")
 
 def make_server(server_address, application):
     host, port = server_address
