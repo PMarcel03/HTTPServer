@@ -22,13 +22,18 @@ class http_server_program:
     """
 
     # TCP Socket Listener
-    def __init__(self, host='0.0.0.0', port=8888, web_root='HTML'):
+    def __init__(self, host='0.0.0.0', port=8888, web_root=None):
         """
         Initializes the server's state and creates the listening socket.
         """
         self.host = host
         self.port = port
-        self.web_root = web_root
+        
+        if web_root is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            self.web_root = os.path.join(script_dir, 'HTML')
+        else:
+            self.web_root = web_root
 
         # Create, configure, and bind the server socket
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -73,6 +78,8 @@ class http_server_program:
         print(f'Serving HTTP on {self.host}:{self.port} ...')
         print(f'Parent PID: {os.getpid()}')
         print(f'Web Root Directory: {os.path.abspath(self.web_root)}')
+        print (f'HTTP/1.1 Compliant Server')
+        print (f'Supported Methods: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS')
 
         # Set up signal handler for cleaning up zombie processes
         signal.signal(signal.SIGCHLD, self.grim_reaper)
@@ -114,7 +121,7 @@ class http_server_program:
     def read_request_body(self, connection):
         """
         Read the complete request body based on Content-Length header
-        Required for POST/PUT requests with JSON bodies
+        Required for POST/PUT/DELETE requests with JSON bodies
         """
         if self.content_length < 0:
             return ""
@@ -171,8 +178,6 @@ class http_server_program:
         Format any data as a proper JSON HTTP response
         """
         json_body = json.dumps(data, indent=2, ensure_ascii=False)
-
-        # Use the new utility method for consistent formatting
         return self.create_response(json_body, 'application/json', status)
 
     def format_json_error(self, status, message):
@@ -208,9 +213,14 @@ class http_server_program:
 
             self.parse_request(request_data)
 
+            if self.request_version == 'HTTP/1.1' and 'host' not in self.headers:
+                error_response = self.format_json_error("400 Bad Request", "HTTP/1.1 requires Host header")
+                self.send_error_response(connection, error_response)
+                return
+
             # Read JSON body for specific methods
             self.json_body = None
-            if self.request_method in ['POST', 'PUT', 'PATCH'] and self.content_length > 0:
+            if self.request_method in ['POST', 'PUT', 'PATCH', 'DELETE'] and self.content_length > 0:
                 body_data = self.read_request_body(connection)
                 try:
                     self.json_body = self.extract_json_body(body_data)
@@ -222,13 +232,51 @@ class http_server_program:
             # Use a single variable to store the final response to be sent
             response_data = None
 
+            #Handle OPTIONS requests (HTTP/1.1 method discovery)
+            if self.request_method == 'OPTIONS':
+                #Check if it's an API Route
+                handler, variables = self.custom_router.dispatch(self.path, 'GET')
+                if handler:
+                    #Find all methods for this route
+                    allowed_methods = []
+                    for route in self.custom_router.routes:
+                        is_match, _ = self.custom_router._match_and_extract(self.path, route['pattern'])
+                        if is_match:
+                            allowed_methods.extend(route['methods'])
+                    allowed_methods = list(set(allowed_methods + ['OPTIONS']))
+
+                headers = [
+                    ('Allow', ', '.join(sorted(allowed_methods))),
+                    ('Content-Length', '0'),
+                    ('Connection', 'close')
+                ]
+
+                response_data = {
+                    'status': '200 OK',
+                    'headers': headers,
+                    'body': ''
+                }
+            else:
+                #Static files or not found
+                headers = [
+                    ('Allow', 'GET, HEAD, OPTIONS'),
+                    ('Content-Length', '0'),
+                    ('Connection', 'close')
+                ]
+                response_data = {
+                    'status': '200 OK',
+                    'headers': headers,
+                    'body': ''
+                }
+
             # Check custom router first
             handler, variables = self.custom_router.dispatch(self.path, self.request_method)
 
             if handler:
                 # Custom router found a route; call its handler
                 try:
-                    # Pass JSON body to handler if it accepts it
+                    #Pass method info and JSON body to handler
+                    variables['_method'] = self.request_method
                     if 'json_body' in handler.__code__.co_varnames:
                         content, content_type, status = handler(variables, json_body=self.json_body)
                     else:
@@ -241,16 +289,41 @@ class http_server_program:
                     response_data = self.format_json_error("500 Internal Server Error", f"Handler error: {str(e)}")
 
             # After checking the router, check for static files, etc.
-            elif self.request_method == 'GET':
+            elif self.request_method in ['GET', 'HEAD']:
                 # Handle static file requests, including HTML
                 if self.path == '/':
                     response_data = self.serve_html_file('/index.html')
                 elif '.' in self.path:
                     response_data = self.serve_html_file(self.path)
                 else:
-                    # If it's not a known file type, it's a 404
                     response_data = self.format_json_error("404 Not Found", f"No route found for {self.path}")
+                #For HEAD requests, remove the body but keep headers
+                if self.request_method == 'HEAD':
+                    response_data['body'] = ''
 
+            #Method not allowed for non-GET on static paths
+            elif '.' in self.path or self.path =='/':
+                error_data = {
+                    "success": False,
+                    "error": {
+                        "status": "405 Method Not Allowed",
+                        "message": f"Method {self.request_method} not allowed for static files" 
+                    },
+                    "timestamp": self.get_timestamp()
+                }
+                #HTTP/1.1 requires Allow header for 405 responses
+                headers = [
+                    ('Content-Type', 'application/json; charset=utf-8'),
+                    ('Content-Length', str(len(json.dumps(error_data).encode('utf-8')))),
+                    ('Allow', 'GET, HEAD'),
+                    ('Connection', 'close')
+                ]
+                response_data = {
+                    'status': '405 Method Not Allowed',
+                    'headers': headers,
+                    'body': json.dumps(error_data, indent=2)
+                }
+   
 
             else:
                 # Fallback to Flask WSGI application
@@ -265,20 +338,47 @@ class http_server_program:
                 self.finish_response([response_data['body']])
 
         except ValueError as e:
-            error_response = self.format_json_error("400 Bad Request", str(e))
+            #Handle 501 Not Implemented vs 400 Bad Request
+            error_msg = str(e)
+            if "Method not implemented" in error_msg:
+                error_response = self.format_json_error("501 Not Implemented", error_msg)
+            else:
+                error_response = self.format_json_error("400 Bad Request", error_msg)
             self.send_error_response(connection, error_response)
+
         except Exception as e:
+            print(f"Server error: {e}")
             error_response = self.format_json_error("500 Internal Server Error", "Internal server error occurred")
             self.send_error_response(connection, error_response)
+
+    def send_response(self, connection, response_data):
+        """Unified response sending with proper HTTP version"""
+        # Use request version if available, default to HTTP/1.0
+        http_version = getattr(self, 'request_version', 'HTTP/1.0')
+        if http_version not in ['HTTP/1.0', 'HTTP/1.1']:
+            http_version = 'HTTP/1.0'
+            
+        response = f"{http_version} {response_data['status']}\r\n"
+        for header in response_data['headers']:
+            response += f"{header[0]}: {header[1]}\r\n"
+        response += f"\r\n{response_data['body']}"
+        connection.sendall(response.encode('utf-8'))
+
 
     def send_error_response(self, connection, response_data):
         """Send a JSON formatted error response"""
         try:
+            #Use request version if avaliable
+            http_version = getattr(self, 'request_version', 'HTTP/1.0')
+            if http_version not in ['HTTP/1.0', 'HTTP/1.1']:
+                http_version = 'HTTP/1.0'
+
+
             status = response_data['status']
             headers = response_data['headers']
             body = response_data['body']
 
-            response = f"HTTP/1.1 {status}\r\n"
+            response = f"{http_version} {status}\r\n"
             for header in headers:
                 response += f"{header[0]}: {header[1]}\r\n"
             response += f"\r\n{body}"
@@ -288,31 +388,52 @@ class http_server_program:
             print(f"Failed to send error response {e}")
 
     def parse_request(self, text):
-        """Enhanced HTTP parsing with headers and query string support"""
+        """HTTP/1.1 Compliant request parsing with proper header handling"""
         if not text or not text.strip():
             raise ValueError("Empty request")
 
         lines = text.splitlines()
         if not lines:
             raise ValueError("No request line found")
-
+        
+        #Request parse line
         request_line = lines[0].rstrip('\r\n')
         parts = request_line.split()
 
         if len(parts) < 2:
             raise ValueError(f"Invalid request line: {request_line}")
         elif len(parts) == 2:
+            #HTTP/0.9 style request (Method and path only)
             self.request_method, full_path = parts
             self.request_version = 'HTTP/1.0'
         else:
             self.request_method, full_path, self.request_version = parts[0], parts[1], parts[2]
 
+        #Validate HTTP version
+        if self.request_version not in ['HTTP/1.0', 'HTTP/1.1']:
+            raise ValueError(f"unsupported HTTP version: {self.request_version}")
+        
+        #Validate HTTP method (Only support standard methods)
+        valid_methods = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH']
+        if self.request_method not in valid_methods:
+            raise ValueError(f"Method not implemented: {self.request_method}")
+        
+        #Handle absolute URIs (HTTP/1.1 allows http://host/path format)
+        if full_path.startswith('http://') or full_path.startswith('https://'):
+            from urllib.parse import urlparse
+            parsed = urlparse(full_path)
+            full_path = parsed.path or '/'
+            if parsed.query:
+                full_path += '?' + parsed.query
+
+        #Parse path and query string
         if '?' in full_path:
             self.path, self.query_string = full_path.split('?', 1)
         else:
             self.path = full_path
             self.query_string = ''
 
+        #Parse headers
         self.headers = {}
         for line in lines[1:]:
             line = line.strip()
@@ -324,6 +445,7 @@ class http_server_program:
 
         self.content_length = int(self.headers.get('content-length', '0'))
 
+    #Build WSGI environ dictionary
     def get_environ(self):
         env = {}
         env['wsgi.version'] = (1, 0)
@@ -331,29 +453,39 @@ class http_server_program:
         env['wsgi.input'] = io.StringIO(self.request_data)
         env['wsgi.errors'] = sys.stderr
         env['wsgi.multithread'] = False
-        env['wsgi.multiprocess'] = False
+        env['wsgi.multiprocess'] = True
         env['wsgi.run_once'] = False
         env['REQUEST_METHOD'] = self.request_method
         env['PATH_INFO'] = urllib.parse.unquote(self.path)
         env['QUERY_STRING'] = self.query_string
         env['SERVER_NAME'] = self.server_name
         env['SERVER_PORT'] = str(self.server_port)
+        env['SERVER_PROTOCOL'] = self.request_version
 
         if self.content_length > 0:
             env['CONTENT_LENGTH'] = str(self.content_length)
         if 'content-type' in self.headers:
             env['CONTENT_TYPE'] = self.headers['content-type']
 
+        #Add all HTTP headers to environ
         for name, value in self.headers.items():
             cgi_name = 'HTTP_' + name.upper().replace('-', '_')
             env[cgi_name] = value
 
         return env
     
+    #Create HTTP/1.1 compliant response with proper headers
     def create_response(self, content, content_type, status='200 OK'):
+        from datetime import datetime, timezone
+        #RFC 1123 date format required by HTTP/1.1
+        current_date = datetime.now(timezone.utc).strftime('%a %d %b %Y %H:%M:%S GMT')
+
         headers = [
+            ('Date', current_date),
+            ('Server', 'CustomHTTPServer/1.1'),
             ('Content-Type', f'{content_type}; charset=utf-8'),
-            ('Content-Length', str(len(content.encode('utf-8'))))
+            ('Content-Length', str(len(content.encode('utf-8')))),
+            ('Connection', 'close') #HTTP/1.1 connection handling
         ]
         return {
             'status': status,
@@ -367,13 +499,14 @@ class http_server_program:
 
         server_headers = [
             ('Date', current_date),
-            ('Server', 'WSGIServer 0.2')
+            ('Server', 'CustomHTTPServer/1.1'),
+            ('Connection', 'close')
         ]
 
         self.headers_set = [status, response_headers + server_headers]
         return self.finish_response
 
-
+    #Send the complete HTTP response to client
     def finish_response(self, result):
         try:
             status, response_headers = self.headers_set
@@ -394,6 +527,7 @@ class http_server_program:
             print(f"Error sending response due to a broken pipe or socket error {os.getpid()}: {e}")
 
 def make_server(server_address, application):
+    #Factory function to create server instance
     host, port = server_address
     server = http_server_program(host, port)
     server.set_app(application)
@@ -408,5 +542,24 @@ if __name__ == '__main__':
 
     try:
         httpd.serve_forever()
-    except:
-        print('\nServer Stopped')
+    except KeyboardInterrupt:
+        print('\n🛑 Server stopped by user (Ctrl +C)')
+    except OSError as e:
+        if e.errno == 48 or e.errno == 98: #Address already in use (MacOS/Linux)
+            print(f'\n❌ Error: Port {PORT} is already in use')
+            print(f'  Try a different pot or kill the process using: lsof -ti{PORT} | xargs kill')
+        elif e.errno == 13: #Permission denied
+            print(f'\n❌ Error: Permission denied on port {PORT}')
+            print(f'    Ports below 1024 require root privileges (Try sudo or use port > 1024)')
+        else:
+            print(f'\n❌ Network error: {e}')
+        sys.exit(1)
+    except Exception as e:
+        print(f'\n ❌ Unexpected error: {e}')
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        print('Shutting down server...')
+        if 'httpd' in locals():
+            httpd.socket.close()
