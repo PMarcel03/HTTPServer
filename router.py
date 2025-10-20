@@ -62,13 +62,13 @@ messages = [
       { 
             "id": 1,
             "text": "Hello, this is the first message",
-            "Author": "System",
+            "author": "System",
             "timestamp": datetime.now().isoformat()
       },
       {
             "id": 2,
             "text": "Welcome to the message board API",
-            "Author": "System",
+            "author": "System",
             "timestamp": datetime.now().isoformat()
       }
 ]
@@ -78,6 +78,7 @@ next_message_id = 3
 #============================================================
 @router.route('/api/messages', methods=['GET','HEAD','POST','OPTIONS'])
 def api_messages(variables, json_body=None):
+      global messages
       """
       GET: Retrieve all messages
       POST: Create a new message
@@ -85,6 +86,10 @@ def api_messages(variables, json_body=None):
       global next_message_id
 
       method = variables.get('_method', 'GET')
+
+      print(f"DEBUG: Method = {method}")
+      print(f"DEBUG: json_body = {json_body}")
+      print(f"DEBUG: variables = {variables}")
 
       #GET - List all messages
       if method in ['GET', 'HEAD']:
@@ -143,7 +148,7 @@ def api_message_detail(variables, json_body=None):
             message_id = int(variables.get('message_id'))
       except (ValueError, TypeError):
             error = {
-                  "success": True,
+                  "success": False,
                   "error": "Invalid message ID - must be an integer"
             }
             return json.dumps(error, indent=2), 'application/json', '400 Bad Request'
@@ -162,7 +167,7 @@ def api_message_detail(variables, json_body=None):
                   "success": True,
                   "data": message
             }
-            return json.dumps(error, indent=2), 'application/json', '200 OK'
+            return json.dumps(response_data, indent=2), 'application/json', '200 OK'
       
       #DELETE - Delete a single message
       if method == 'DELETE':
@@ -172,7 +177,7 @@ def api_message_detail(variables, json_body=None):
                         "error": f"Message with ID {message_id} not found"
                   }
                   return json.dumps(error, indent=2), 'application/json', '404 Not Found'
-            messages = [m for m in messages if m['id'] !=message_id]
+            messages[:] = [m for m in messages if m['id'] !=message_id]
 
             response_data = {
                   "success": True,

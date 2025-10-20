@@ -3,11 +3,225 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HTTP Assignment</title>
+    <title>Message Board</title>
+    <style>
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {color: #333;}
+        .message-form{
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        input, textarea{
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            padding: 10px, 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {background: #0056b3;}
+        .message{
+            background: white;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .message-header{
+            display: flex;
+            justify-content: space-between;
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+        .message-text{color: #333; font-size: 1.1em;}
+        .delete-btn{
+            background: #dc3545;
+            padding: 5px 10px;
+            font-size: 0.9em;
+        }
+        .delete-btn:hover{background: #c82333;}
+        .edit-btn{
+            background: #28a745;
+            padding: 5px 10px;
+            font-size: 0.9em;
+        }
+        .edit-btn:hover{background: #218838;}
+        .cancel-btn{
+            background: #6c757d;
+        }
+        .cancel-btn:hover{background: #5a6268;}
+        .save-btn{
+            background: #007bff;
+        }
+        .save-btn:hover{background: #0056b3;}
+        .edit-form{
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #ddd;
+            display: none;
+        }
+        .edit-form.active{
+            display: block;
+        }
+    </style>
 </head>
 <body>
-    <h1>Hello World!</h1>
-    <p>Welcome to the index.html webpage..</p>
-    <p> Here's a link to <a href="ipsum.html">ipsum</a></p>
+    <h1>💬Message Board</h1>
+
+    <div class="message-form">
+        <h2>Post a Message</h2>
+        <input type="text" id="author" placeholder="Your name">
+        <textarea id="text" placeholder="Your message" rows="4"></textarea>
+        <button type="button" onclick="postMessage()">Post Message</button>
+    </div>
+
+    <div id ="messages"></div>
+
+    <script>
+        //Fetch and display messages
+        async function loadMessages(){
+            try{
+                const response = await fetch('/api/messages');
+                const data = await response.json();
+
+                const messagesDiv = document.getElementById('messages');
+                messagesDiv.innerHTML = '';
+
+                data.messages.forEach(msg => {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'message';
+                    messageDiv.innerHTML = `
+                    <div class ="message-header">
+                        <span><strong>${msg.author}</strong> - ${new Date(msg.timestamp).toLocaleDateString()}</span>
+                        </div>
+                    <div class="message-text">${msg.text}</div>
+                    <div class = "message-buttons">
+                        <button class="delete-btn" onclick="deleteMessage(${msg.id})">Delete</button>
+                        <button class = "edit-btn" onclick ="showEditForm(${msg.id})">Edit</button>
+                    </div>
+                    <div id ="edit-form-${msg.id}" class="edit-form">
+                        <input type="text" id="edit-author-${msg.id}" value="${escapeHTML(msg.author)}" placeholder="Author">
+                        <textarea id="edit-text-${msg.id}" rows="3">${escapeHTML(msg.text)}</textarea>
+                        <button class="save-btn" onclick="updateMessage(${msg.id})">Save</button>
+                        <button class="cancel-btn" onclick="hideEditForm(${msg.id})">Cancel</button>
+                    </div>
+                    `;
+                    messagesDiv.appendChild(messageDiv);
+                });
+            } catch (error) {
+                console.error('Error loading messages:', error);
+            }
+        }
+
+        //Escape HTML to prevent XSS
+        function escapeHTML(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        //Post a new message
+        async function postMessage() {
+            const author = document.getElementById('author').value || 'Anonymous';
+            const text = document.getElementById('text').value;
+
+            if (!text.trim()){
+                alert('Please enter a message!');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/messages', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({author, text})
+                });
+
+                if (response.ok){
+                    document.getElementById('text').value = '';
+                    loadMessages();
+                }
+            }catch (error){
+                console.error('Error posting message:', error);
+            }
+            
+        }
+
+        //Show edit form for a message
+        function showEditForm(id){
+            const editForm = document.getElementById(`edit-form-${id}`)
+            editForm.classList.add('active');
+        }
+
+        //Hide edit form
+        function hideEditForm(id){
+            const editForm = document.getElementById(`edit-form-${id}`);
+            editForm.classList.remove('active');
+        }
+
+        async function updateMessage(id) {
+            const author = document.getElementById(`edit-author-${id}`).value;
+            const text = document.getElementById(`edit-text-${id}`).value;
+
+            if (!text.trim()){
+                alert('Message cannot be empty!')
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/messages/${id}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({author, text})
+                });
+
+                if (response.ok){
+                    hideEditForm(id);
+                    loadMessages();
+                } else {
+                    alert('Failed to update message')
+                }
+            } catch (error){
+                console.error('Error updating message:', error);
+                alert('Error updating message')
+            }
+            
+        }
+
+        //Delete message
+        async function deleteMessage(id) {
+            if (!confirm('Delete this message?')) return;
+
+            try {
+                await fetch(`/api/messages/${id}`, {method: 'DELETE'})
+                loadMessages();
+            }catch (error){
+                console.error('Error deleting message:', error)
+            }
+            
+        }
+
+        //Load messages on page load
+        loadMessages();
+    </script>
 </body>
 </html>

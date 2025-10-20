@@ -1,20 +1,16 @@
 # HTTP Server Python
 import socket
 import os
-import io
 import sys
 import urllib.parse
 import errno
-import signal
 import json
 import re
+import threading
 from datetime import datetime
 
-# Import Flask App
-from app import app as flask_app
 # Import Router
 from router import get_router
-
 
 class http_server_program:
     """
@@ -40,97 +36,69 @@ class http_server_program:
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((self.host, self.port))
 
-        # Return Headers Set By Web Framework/Web App
-        self.headers_set = []
+        # Return Headers Set By Web Framework/Web App (Unused Code: For Flask/WSGI compatibility)
+        # self.headers_set = []
 
         # Set Server name and port for Environ dictionary
         self.server_name = self.host
         self.server_port = self.port
         self.custom_router = get_router()
 
-    def set_app(self, application):
-        self.application = application
-
-    def grim_reaper(self, signum, frame):
-        """
-        Signal handler to clean up zombie child processes
-        uses waitpid with WNOHANG to handle multiple simultaneous child exits
-        """
-        while True:
-            try:
-                pid, status = os.waitpid(
-                    -1,  # Wait for any child process
-                    os.WNOHANG  # Don't block, return immediately if no zombies
-                )
-            except OSError:
-                # No more child processes to wait for
-                return
-            if pid == 0:  # No more zombies to clean up
-                return
 
     # TCP Socket Listener
     def serve_forever(self):
         """
-        Concurrent server loop that forks child processes to handle requests
-        """
-
+            Concurrent server loop that uses threads to handle requests
+            """
         self.socket.listen(1024)
         print(f'Serving HTTP on {self.host}:{self.port} ...')
-        print(f'Parent PID: {os.getpid()}')
+        print(f'Main Thread: {threading.current_thread().name}')
         print(f'Web Root Directory: {os.path.abspath(self.web_root)}')
-        print (f'HTTP/1.1 Compliant Server')
-        print (f'Supported Methods: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS')
-
-        # Set up signal handler for cleaning up zombie processes
-        signal.signal(signal.SIGCHLD, self.grim_reaper)
+        print(f'HTTP/1.1 Compliant Server')
+        print(f'Supported Methods: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS')
+        print(f'Using threading for concurrent requests')
 
         while True:
             try:
-                # Wait for client connections
                 client_connection, client_address = self.socket.accept()
                 print(f"Accepted Connection From: {client_address}")
-
             except IOError as e:
                 code, msg = e.args
-                # Restart accept() if it was interrupted by a signal
                 if code == errno.EINTR:
                     continue
                 else:
                     raise
 
-            # Fork a child process to handle this client
-            pid = os.fork()
+            # Create a thread to handle this client
+            client_thread = threading.Thread(
+                target=self.handle_client,
+                args=(client_connection,),
+                daemon=True
+            )
+            client_thread.start()
 
-            if pid == 0:  # Child process
-                # Child doesn't need listening socket
-                self.socket.close()
-
-                # Handle the client's request
-                self.handle_request(client_connection)
-
-                # Close client connection and exit
-                client_connection.close()
-                os._exit(0)  # Child exits here
-
-            else:  # Parent Process
-                # Parent doesn't need client connection
-                # Child process will handle it
-                client_connection.close()
-                # Loop back to accept() for next client
+    def handle_client(self, connection):
+        """Handle a single client connection in a separate thread"""
+        try:
+            self.handle_request(connection)
+        finally:
+            connection.close()
 
     def read_request_body(self, connection):
         """
         Read the complete request body based on Content-Length header
         Required for POST/PUT/DELETE requests with JSON bodies
         """
-        if self.content_length < 0:
+        if self.content_length <= 0:
             return ""
-        body_data = b""
-        remaining = self.content_length
+        
+        #Start with any body data already recieved in inital recv
+        body_data = getattr(self, 'initial_body_data', b"")
+        remaining = self.content_length - len(body_data)
 
         # Read the body in chunks
         while remaining > 0:
-            chunk = connection.recv(min(remaining, 4096))
+            chunk = connection.recv(min(4096, remaining))
             if not chunk:
                 break
             body_data += chunk
@@ -205,13 +173,24 @@ class http_server_program:
     def handle_request(self, connection):
         try:
             self.client_connection = connection
-            request_data = connection.recv(4096).decode('utf-8')
+            #Read inital data - may contain headers + partial/full body
+            request_data = connection.recv(8192)
 
             if not request_data.strip():
                 print("Empty request received")
                 return
+            
+            #Split headers and body at \r\n\r\n
+            if b"\r\n\r\n" in request_data:
+                header_data, body_data = request_data.split(b"\r\n\r\n", 1)
+                request_text = header_data.decode('utf-8')
+                #Store any body data we already recieved
+                self.initial_body_data = body_data
+            else:
+                request_text = request_data.decode('utf-8')
+                self.initial_body_data = b""
 
-            self.parse_request(request_data)
+            self.parse_request(request_text)
 
             if self.request_version == 'HTTP/1.1' and 'host' not in self.headers:
                 error_response = self.format_json_error("400 Bad Request", "HTTP/1.1 requires Host header")
@@ -231,6 +210,9 @@ class http_server_program:
 
             # Use a single variable to store the final response to be sent
             response_data = None
+
+            # Check custom router first
+            handler, variables = self.custom_router.dispatch(self.path, self.request_method)
 
             #Handle OPTIONS requests (HTTP/1.1 method discovery)
             if self.request_method == 'OPTIONS':
@@ -268,9 +250,6 @@ class http_server_program:
                     'headers': headers,
                     'body': ''
                 }
-
-            # Check custom router first
-            handler, variables = self.custom_router.dispatch(self.path, self.request_method)
 
             if handler:
                 # Custom router found a route; call its handler
@@ -326,16 +305,19 @@ class http_server_program:
    
 
             else:
-                # Fallback to Flask WSGI application
-                env = self.get_environ()
-                result = self.application(env, self.start_response)
-                self.finish_response(result)
-                return
+                # Fallback to Flask WSGI application (Unused code: For Flask/WSGI compatibility)
+                # env = self.get_environ()
+                # result = self.application(env, self.start_response)
+                # self.finish_response(result)
+                # return
+                
+                #No route found - return 404
+                response_data = self.format_json_error("404 Not Found", f"No route found for {self.path}")
 
             # Send the unified response if a custom handler was found
             if response_data:
-                self.start_response(response_data['status'], response_data['headers'])
-                self.finish_response([response_data['body']])
+                self.send_response(connection, response_data)
+               
 
         except ValueError as e:
             #Handle 501 Not Implemented vs 400 Bad Request
@@ -445,36 +427,75 @@ class http_server_program:
 
         self.content_length = int(self.headers.get('content-length', '0'))
 
-    #Build WSGI environ dictionary
-    def get_environ(self):
-        env = {}
-        env['wsgi.version'] = (1, 0)
-        env['wsgi.url_scheme'] = 'http'
-        env['wsgi.input'] = io.StringIO(self.request_data)
-        env['wsgi.errors'] = sys.stderr
-        env['wsgi.multithread'] = False
-        env['wsgi.multiprocess'] = True
-        env['wsgi.run_once'] = False
-        env['REQUEST_METHOD'] = self.request_method
-        env['PATH_INFO'] = urllib.parse.unquote(self.path)
-        env['QUERY_STRING'] = self.query_string
-        env['SERVER_NAME'] = self.server_name
-        env['SERVER_PORT'] = str(self.server_port)
-        env['SERVER_PROTOCOL'] = self.request_version
+#=============================================================================================================
+# WSGI/FLASK COMPATIBILITY LAYER (UNUSED)                                                                   ||
+# These methods were implemented to support Flask integration                                               ||
+# but the final implementation uses a custom router instead.                                                ||
+# Kept for reference and potential future WSGI support.                                                     ||
+#=============================================================================================================
+    # def get_environ(self):
+    #     env = {}
+    #     env['wsgi.version'] = (1, 0)
+    #     env['wsgi.url_scheme'] = 'http'
+    #     env['wsgi.input'] = io.StringIO(self.request_data)
+    #     env['wsgi.errors'] = sys.stderr
+    #     env['wsgi.multithread'] = False
+    #     env['wsgi.multiprocess'] = True
+    #     env['wsgi.run_once'] = False
+    #     env['REQUEST_METHOD'] = self.request_method
+    #     env['PATH_INFO'] = urllib.parse.unquote(self.path)
+    #     env['QUERY_STRING'] = self.query_string
+    #     env['SERVER_NAME'] = self.server_name
+    #     env['SERVER_PORT'] = str(self.server_port)
+    #     env['SERVER_PROTOCOL'] = self.request_version
 
-        if self.content_length > 0:
-            env['CONTENT_LENGTH'] = str(self.content_length)
-        if 'content-type' in self.headers:
-            env['CONTENT_TYPE'] = self.headers['content-type']
+    #     if self.content_length > 0:
+    #         env['CONTENT_LENGTH'] = str(self.content_length)
+    #     if 'content-type' in self.headers:
+    #         env['CONTENT_TYPE'] = self.headers['content-type']
 
-        #Add all HTTP headers to environ
-        for name, value in self.headers.items():
-            cgi_name = 'HTTP_' + name.upper().replace('-', '_')
-            env[cgi_name] = value
+    #     #Add all HTTP headers to environ
+    #     for name, value in self.headers.items():
+    #         cgi_name = 'HTTP_' + name.upper().replace('-', '_')
+    #         env[cgi_name] = value
 
-        return env
+    #     return env
     
-    #Create HTTP/1.1 compliant response with proper headers
+    # def start_response(self, status, response_headers, exc_info=None):
+    #     from datetime import datetime
+    #     current_date = datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+
+    #     server_headers = [
+    #         ('Date', current_date),
+    #         ('Server', 'CustomHTTPServer/1.1'),
+    #         ('Connection', 'close')
+    #     ]
+
+    #     self.headers_set = [status, response_headers + server_headers]
+    #     return self.finish_response
+    # 
+    # #Send the complete HTTP response to client
+    # def finish_response(self, result):
+    #     try:
+    #         status, response_headers = self.headers_set
+    #         response = f'HTTP/1.1 {status}\r\n'
+
+    #         for header in response_headers:
+    #             response += '{0}: {1}\r\n'.format(*header)
+    #         response += '\r\n'
+
+    #         self.client_connection.sendall(response.encode('utf-8'))
+
+    #         for data in result:
+    #             if isinstance(data, str):
+    #                 data = data.encode('utf-8')
+    #             self.client_connection.sendall(data)
+
+    #     except (socket.error, BrokenPipeError) as e:
+    #         print(f"Error sending response due to a broken pipe or socket error {os.getpid()}: {e}")
+#=============================================================================================================
+
+       #Create HTTP/1.1 compliant response with proper headers
     def create_response(self, content, content_type, status='200 OK'):
         from datetime import datetime, timezone
         #RFC 1123 date format required by HTTP/1.1
@@ -493,51 +514,17 @@ class http_server_program:
             'body': content
         }
 
-    def start_response(self, status, response_headers, exc_info=None):
-        from datetime import datetime
-        current_date = datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
-
-        server_headers = [
-            ('Date', current_date),
-            ('Server', 'CustomHTTPServer/1.1'),
-            ('Connection', 'close')
-        ]
-
-        self.headers_set = [status, response_headers + server_headers]
-        return self.finish_response
-
-    #Send the complete HTTP response to client
-    def finish_response(self, result):
-        try:
-            status, response_headers = self.headers_set
-            response = f'HTTP/1.1 {status}\r\n'
-
-            for header in response_headers:
-                response += '{0}: {1}\r\n'.format(*header)
-            response += '\r\n'
-
-            self.client_connection.sendall(response.encode('utf-8'))
-
-            for data in result:
-                if isinstance(data, str):
-                    data = data.encode('utf-8')
-                self.client_connection.sendall(data)
-
-        except (socket.error, BrokenPipeError) as e:
-            print(f"Error sending response due to a broken pipe or socket error {os.getpid()}: {e}")
-
-def make_server(server_address, application):
+def make_server(server_address):
     #Factory function to create server instance
     host, port = server_address
     server = http_server_program(host, port)
-    server.set_app(application)
     return server
 
 
 SERVER_ADDRESS = (HOST, PORT) = '', 8888
 
 if __name__ == '__main__':
-    httpd = make_server(SERVER_ADDRESS, flask_app)
+    httpd = make_server(SERVER_ADDRESS)
     print(f'WSGIServer: Serving HTTP on port {PORT}... \n')
 
     try:
