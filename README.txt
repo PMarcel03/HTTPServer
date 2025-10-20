@@ -15,7 +15,8 @@ rather than relying on high level frameworks.
 * Routing System
 * HTTP Response
 * Comprehensive Error Handling
+* Message Board API
 
-##Inprogress Features
-    * Message Board API
+   
+
 
