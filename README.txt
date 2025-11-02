@@ -1,10 +1,10 @@
 Simple Python HTTP Server Project:
 
-A lightweight, custom-built HTTP 1.1 server in Python, designed to serve static files from a specified web root directory.
+A lightweight, custom-built HTTP 1.0 server in Python, designed to serve static files from a specified web root directory.
 
 ##Introduction
 
-This project implements a basic HTTP (Hypertext Transfer Protocol) 1.1 server entirely from scratch using Python's 'socket' module.
+This project implements a basic HTTP (Hypertext Transfer Protocol) 1.0 server entirely from scratch using Python's 'socket' module.
 The primary goal of this project is to provide a deep understanding of the underlying mechanics of web communication, TCP/IP, and the HTTP protocol,
 rather than relying on high level frameworks.
 
@@ -18,6 +18,7 @@ rather than relying on high level frameworks.
 * Message Board API
 
    
+
 
 
 
