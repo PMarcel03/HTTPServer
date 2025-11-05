@@ -54,7 +54,7 @@ class http_server_program:
         print(f'Serving HTTP on {self.host}:{self.port} ...')
         print(f'Main Thread: {threading.current_thread().name}')
         print(f'Web Root Directory: {os.path.abspath(self.web_root)}')
-        print(f'HTTP/1.1 Compliant Server')
+        print(f'HTTP/1.0 Compliant Server')
         print(f'Supported Methods: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS')
         print(f'Using threading for concurrent requests')
 
@@ -192,8 +192,8 @@ class http_server_program:
 
             self.parse_request(request_text)
 
-            if self.request_version == 'HTTP/1.1' and 'host' not in self.headers:
-                error_response = self.format_json_error("400 Bad Request", "HTTP/1.1 requires Host header")
+            if self.request_version == 'HTTP/1.0' and 'host' not in self.headers:
+                error_response = self.format_json_error("400 Bad Request", "HTTP/1.0 requires Host header")
                 self.send_error_response(connection, error_response)
                 return
 
@@ -214,7 +214,7 @@ class http_server_program:
             # Check custom router first
             handler, variables = self.custom_router.dispatch(self.path, self.request_method)
 
-            #Handle OPTIONS requests (HTTP/1.1 method discovery)
+            #Handle OPTIONS requests (HTTP/1.0 method discovery)
             if self.request_method == 'OPTIONS':
                 #Check if it's an API Route
                 handler, variables = self.custom_router.dispatch(self.path, 'GET')
@@ -290,7 +290,7 @@ class http_server_program:
                     },
                     "timestamp": self.get_timestamp()
                 }
-                #HTTP/1.1 requires Allow header for 405 responses
+                #HTTP/1.0 requires Allow header for 405 responses
                 headers = [
                     ('Content-Type', 'application/json; charset=utf-8'),
                     ('Content-Length', str(len(json.dumps(error_data).encode('utf-8')))),
@@ -337,7 +337,7 @@ class http_server_program:
         """Unified response sending with proper HTTP version"""
         # Use request version if available, default to HTTP/1.0
         http_version = getattr(self, 'request_version', 'HTTP/1.0')
-        if http_version not in ['HTTP/1.0', 'HTTP/1.1']:
+        if http_version not in ['HTTP/1.0', 'HTTP/1.0']:
             http_version = 'HTTP/1.0'
             
         response = f"{http_version} {response_data['status']}\r\n"
@@ -352,7 +352,7 @@ class http_server_program:
         try:
             #Use request version if avaliable
             http_version = getattr(self, 'request_version', 'HTTP/1.0')
-            if http_version not in ['HTTP/1.0', 'HTTP/1.1']:
+            if http_version not in ['HTTP/1.0', 'HTTP/1.0']:
                 http_version = 'HTTP/1.0'
 
 
@@ -370,7 +370,7 @@ class http_server_program:
             print(f"Failed to send error response {e}")
 
     def parse_request(self, text):
-        """HTTP/1.1 Compliant request parsing with proper header handling"""
+        """HTTP/1.0 Compliant request parsing with proper header handling"""
         if not text or not text.strip():
             raise ValueError("Empty request")
 
@@ -392,7 +392,7 @@ class http_server_program:
             self.request_method, full_path, self.request_version = parts[0], parts[1], parts[2]
 
         #Validate HTTP version
-        if self.request_version not in ['HTTP/1.0', 'HTTP/1.1']:
+        if self.request_version not in ['HTTP/1.0', 'HTTP/1.0']:
             raise ValueError(f"unsupported HTTP version: {self.request_version}")
         
         #Validate HTTP method (Only support standard methods)
@@ -400,7 +400,7 @@ class http_server_program:
         if self.request_method not in valid_methods:
             raise ValueError(f"Method not implemented: {self.request_method}")
         
-        #Handle absolute URIs (HTTP/1.1 allows http://host/path format)
+        #Handle absolute URIs (HTTP/1.0 allows http://host/path format)
         if full_path.startswith('http://') or full_path.startswith('https://'):
             from urllib.parse import urlparse
             parsed = urlparse(full_path)
@@ -478,7 +478,7 @@ class http_server_program:
     # def finish_response(self, result):
     #     try:
     #         status, response_headers = self.headers_set
-    #         response = f'HTTP/1.1 {status}\r\n'
+    #         response = f'HTTP/1.0 {status}\r\n'
 
     #         for header in response_headers:
     #             response += '{0}: {1}\r\n'.format(*header)
@@ -495,10 +495,10 @@ class http_server_program:
     #         print(f"Error sending response due to a broken pipe or socket error {os.getpid()}: {e}")
 #=============================================================================================================
 
-       #Create HTTP/1.1 compliant response with proper headers
+       #Create HTTP/1.0 compliant response with proper headers
     def create_response(self, content, content_type, status='200 OK'):
         from datetime import datetime, timezone
-        #RFC 1123 date format required by HTTP/1.1
+        #RFC 1123 date format required by HTTP/1.0
         current_date = datetime.now(timezone.utc).strftime('%a %d %b %Y %H:%M:%S GMT')
 
         headers = [
@@ -506,7 +506,7 @@ class http_server_program:
             ('Server', 'CustomHTTPServer/1.1'),
             ('Content-Type', f'{content_type}; charset=utf-8'),
             ('Content-Length', str(len(content.encode('utf-8')))),
-            ('Connection', 'close') #HTTP/1.1 connection handling
+            ('Connection', 'close') #HTTP/1.0 connection handling
         ]
         return {
             'status': status,
