@@ -2,12 +2,9 @@
 import socket
 import os
 import sys
-import urllib.parse
 import errno
 import json
-import re
 import threading
-from datetime import datetime
 
 # Import Router
 from router import get_router
