@@ -189,8 +189,8 @@ class http_server_program:
 
             self.parse_request(request_text)
 
-            if self.request_version == 'HTTP/1.0' and 'host' not in self.headers:
-                error_response = self.format_json_error("400 Bad Request", "HTTP/1.0 requires Host header")
+            if self.request_version == 'HTTP/1.1' and 'host' not in self.headers:
+                error_response = self.format_json_error("400 Bad Request", "HTTP/1.1 requires Host header")
                 self.send_error_response(connection, error_response)
                 return
 
@@ -334,7 +334,7 @@ class http_server_program:
         """Unified response sending with proper HTTP version"""
         # Use request version if available, default to HTTP/1.0
         http_version = getattr(self, 'request_version', 'HTTP/1.0')
-        if http_version not in ['HTTP/1.0', 'HTTP/1.0']:
+        if http_version not in ['HTTP/1.0', 'HTTP/1.1']:
             http_version = 'HTTP/1.0'
             
         response = f"{http_version} {response_data['status']}\r\n"
@@ -349,7 +349,7 @@ class http_server_program:
         try:
             #Use request version if avaliable
             http_version = getattr(self, 'request_version', 'HTTP/1.0')
-            if http_version not in ['HTTP/1.0', 'HTTP/1.0']:
+            if http_version not in ['HTTP/1.0', 'HTTP/1.1']:
                 http_version = 'HTTP/1.0'
 
 
@@ -389,7 +389,7 @@ class http_server_program:
             self.request_method, full_path, self.request_version = parts[0], parts[1], parts[2]
 
         #Validate HTTP version
-        if self.request_version not in ['HTTP/1.0', 'HTTP/1.0']:
+        if self.request_version not in ['HTTP/1.0', 'HTTP/1.1']:
             raise ValueError(f"unsupported HTTP version: {self.request_version}")
         
         #Validate HTTP method (Only support standard methods)
