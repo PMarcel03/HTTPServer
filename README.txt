@@ -11,11 +11,12 @@ rather than relying on high level frameworks.
 ##Features
 * TCP Listener Socket configured and functional
 * Static File Serving: Serves HTML, CSS, Javascript and other static content from a configurable web root directory.
-* HTTP/1.0 Compliance: implements core aspects of the HTTP/1.1 protocol.
+* HTTP/1.0 Compliance: implements some aspects of the HTTP/1.1 protocol.
 * Routing System
 * HTTP Response
 * Comprehensive Error Handling
 * CRUD Message Board API
+
 
 
 
